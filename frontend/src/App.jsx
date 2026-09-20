@@ -271,6 +271,33 @@ export default function App() {
           const snaps = data.snapshots || {};
           metricsRef.current = snaps;
           setCurrentMetrics({ ...snaps });
+          setNodes((prevNodes) =>
+            (prevNodes || []).map((node) => {
+              const m = snaps[node.id];
+              if (!m) return node;
+              return {
+                ...node,
+                data: {
+                  ...node.data,
+                  metrics: m,
+                },
+              };
+            })
+          );
+          setEdges((prevEdges) =>
+            (prevEdges || []).map((edge) => {
+              const tm = snaps[edge.target] || {};
+              const isStressed = (tm.latency_p99_ms ?? 0) > 400 || (tm.pool_active ?? 0) >= (tm.pool_max ?? 999);
+              return {
+                ...edge,
+                animated: edge.data?.isCausal || isStressed,
+                data: {
+                  ...edge.data,
+                  isStressed,
+                },
+              };
+            })
+          );
         } else if (event_type === 'REASONING_CHUNK') {
           setThoughts((prev) => prev + (data.token || ''));
         } else if (event_type === 'DIAGNOSIS_REPORT') {

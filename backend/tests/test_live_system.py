@@ -24,7 +24,9 @@ from app.services.orchestrator import ExperimentOrchestrator
 
 
 mark_anyio = pytest.mark.anyio if pytest else lambda f: f
+mark_skip = pytest.mark.skip(reason="Manual integration test - run directly with python test_live_system.py") if pytest else lambda f: f
 
+@mark_skip
 @mark_anyio
 async def test_live_microservices_stress():
     compose_path = Path(__file__).resolve().parent.parent.parent / "target-services" / "docker-compose.yml"

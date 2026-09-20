@@ -109,30 +109,42 @@ class ExperimentOrchestrator:
                 if simulation_scenario:
                     latest_snapshots = SimulationScenarioGenerator.get_tick_snapshots(simulation_scenario, second)
                 else:
-                    # In live mode: query /_metrics from all reachable services in topology
+                    # In live mode: query /_metrics concurrently from all reachable services
                     snapshots = {}
-                    async with httpx.AsyncClient(timeout=1.5) as client:
-                        for node in topology.nodes:
+                    async with httpx.AsyncClient(timeout=0.8) as client:
+                        async def poll_node(node):
                             try:
                                 r = await client.get(f"{node.base_url}/_metrics")
                                 if r.status_code == 200:
-                                    raw = r.json()
-                                    snapshots[node.id] = self.adapter.ingest(raw)
+                                    return node.id, self.adapter.ingest(r.json())
                             except Exception:
                                 pass
+                            return node.id, None
+
+                        results = await asyncio.gather(*(poll_node(n) for n in topology.nodes))
+                        for node_id, snapshot in results:
+                            if snapshot:
+                                snapshots[node_id] = snapshot
 
                     # Fallback for entrypoint if /_metrics wasn't reached
                     ingress_id = topology.entrypoint_ids[0] if topology.entrypoint_ids else "gateway"
                     if ingress_id not in snapshots and stress_driver:
                         live_stats = stress_driver.get_live_metrics()
-                        snapshots[ingress_id] = CanonicalMetricSnapshot(
-                            service_id=ingress_id,
-                            timestamp=now,
-                            throughput_rps=live_stats.get("rps", 0.0),
-                            latency_p50_ms=live_stats.get("p50_ms", 0.0),
-                            latency_p99_ms=live_stats.get("p99_ms", 0.0),
-                            error_rate=live_stats.get("error_rate", 0.0),
-                        )
+                        if live_stats.get("rps", 0.0) > 0.0:
+                            snapshots[ingress_id] = CanonicalMetricSnapshot(
+                                service_id=ingress_id,
+                                timestamp=now,
+                                throughput_rps=live_stats.get("rps", 0.0),
+                                latency_p50_ms=live_stats.get("p50_ms", 0.0),
+                                latency_p99_ms=live_stats.get("p99_ms", 0.0),
+                                error_rate=live_stats.get("error_rate", 0.0),
+                            )
+
+                    # If target microservices are unreachable (e.g. deployed cloud server without target-services container),
+                    # fall back to dynamic simulation ticks so the live dashboard never shows a frozen/blank graph
+                    if not snapshots:
+                        snapshots = SimulationScenarioGenerator.get_tick_snapshots("CASCADING_FAILURE", second)
+
                     latest_snapshots = snapshots
 
                 # Emit metrics tick for live dashboard

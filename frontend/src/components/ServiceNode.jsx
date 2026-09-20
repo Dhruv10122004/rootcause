@@ -48,27 +48,44 @@ export default function ServiceNode({ data }) {
   const poolMax = metrics.pool_max ?? null;
   const retries = metrics.retries_per_sec ?? 0;
 
-  const isHealthy = p99 < 300 && errorRate < 0.05;
-  const isCritical = p99 > 800 || errorRate > 0.15;
+  const isPoolSaturated = poolActive !== null && poolMax !== null && poolActive >= poolMax;
+  const isPoolStressed = poolActive !== null && poolMax !== null && poolActive >= (poolMax - 1) && !isPoolSaturated;
+
+  const isHealthy = p99 < 300 && errorRate < 0.05 && !isPoolSaturated && !isPoolStressed;
+  const isStressed = (p99 >= 300 && p99 <= 800) || (errorRate >= 0.05 && errorRate <= 0.15) || isPoolStressed;
+  const isCritical = p99 > 800 || errorRate > 0.15 || isPoolSaturated;
 
   const isDb = id.toLowerCase().includes('db');
   const isGateway = role === 'ingress';
 
   // Border color: functional meaning only
   let borderColor = 'var(--border-medium)';
-  if (isRootCause) borderColor = 'var(--health-crit)';
-  else if (isCausalPath) borderColor = 'var(--causal-indigo)';
-  else if (isBlastRadius || isCritical) borderColor = 'var(--health-warn)';
-  else if (isSelected) borderColor = 'var(--text-secondary)';
+  let cardBg = 'var(--bg-surface)';
+
+  if (isRootCause) {
+    borderColor = 'var(--health-crit)';
+    cardBg = 'rgba(217, 83, 79, 0.08)';
+  } else if (isCausalPath) {
+    borderColor = 'var(--causal-indigo)';
+    cardBg = 'rgba(124, 110, 240, 0.08)';
+  } else if (isBlastRadius || isCritical) {
+    borderColor = 'var(--health-crit)';
+    cardBg = 'rgba(217, 83, 79, 0.06)';
+  } else if (isStressed) {
+    borderColor = 'var(--health-warn)';
+    cardBg = 'rgba(229, 166, 62, 0.06)';
+  } else if (isSelected) {
+    borderColor = 'var(--text-secondary)';
+  }
 
   const sickClass = (chaosActive || isCritical) ? 'node-sick' : '';
 
   return (
     <div
-      className={`relative rounded-lg cursor-pointer transition-all duration-200 ${sickClass} ${chaosActive ? 'inject-active' : ''}`}
+      className={`relative rounded-lg cursor-pointer transition-all duration-300 ${sickClass} ${chaosActive ? 'inject-active' : ''}`}
       style={{
         width: 220,
-        background: 'var(--bg-surface)',
+        background: cardBg,
         border: `1.5px solid ${borderColor}`,
         padding: '10px 12px',
       }}

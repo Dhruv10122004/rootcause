@@ -66,6 +66,15 @@ body {
   animation: causal-march 0.8s linear infinite;
 }
 
+/* ── Stressed edge live pulse ── */
+@keyframes stressed-march {
+  to { stroke-dashoffset: -16; }
+}
+.stressed-edge-path {
+  stroke-dasharray: 6 4;
+  animation: stressed-march 0.5s linear infinite;
+}
+
 /* ── Drawer entrance ── */
 @keyframes slide-up {
   from { transform: translateY(100%); }

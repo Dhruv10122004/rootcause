@@ -209,75 +209,100 @@ class SimulationScenarioGenerator:
         if scenario_type.upper() == "CASCADING_FAILURE":
             # Degradation kicks in at second 2
             is_degraded = second >= 2
+            db_pool = 5 if is_degraded else 1
+            db_lat = 1250.0 if is_degraded else 15.0
             inv_lat = 1150.0 if is_degraded else 18.0
-            inv_pool = 19 if is_degraded else 4
-            orders_pool = 20 if is_degraded else 5
+            pay_lat = 1100.0 if is_degraded else 20.0
             orders_lat = 1380.0 if is_degraded else 25.0
-            gw_errors = 0.14 if is_degraded else 0.0
             gw_lat = 1450.0 if is_degraded else 35.0
+            gw_errors = 0.14 if is_degraded else 0.0
+
+            gw_snap = CanonicalMetricSnapshot(
+                service_id="gateway", timestamp=now, throughput_rps=150.0 if is_degraded else 80.0,
+                latency_p50_ms=45.0, latency_p99_ms=gw_lat, error_rate=gw_errors,
+                downstream_calls=[DownstreamCall(target="orders", latency_ms=orders_lat, errors=int(gw_errors * 10))]
+            )
+            orders_snap = CanonicalMetricSnapshot(
+                service_id="orders", timestamp=now, throughput_rps=150.0 if is_degraded else 80.0,
+                latency_p50_ms=40.0, latency_p99_ms=orders_lat, error_rate=gw_errors * 0.7,
+                pool_active=20 if is_degraded else 5, pool_max=20, retries_per_sec=35.0 if is_degraded else 0.0,
+                downstream_calls=[
+                    DownstreamCall(target="inventory", latency_ms=inv_lat, errors=5 if is_degraded else 0),
+                    DownstreamCall(target="payment", latency_ms=pay_lat, errors=4 if is_degraded else 0),
+                ]
+            )
+            inv_snap = CanonicalMetricSnapshot(
+                service_id="inventory", timestamp=now, throughput_rps=120.0 if is_degraded else 60.0,
+                latency_p50_ms=800.0 if is_degraded else 12.0, latency_p99_ms=inv_lat, error_rate=0.0,
+                downstream_calls=[DownstreamCall(target="db-service", latency_ms=db_lat, errors=0)]
+            )
+            pay_snap = CanonicalMetricSnapshot(
+                service_id="payment", timestamp=now, throughput_rps=120.0 if is_degraded else 60.0,
+                latency_p50_ms=750.0 if is_degraded else 14.0, latency_p99_ms=pay_lat, error_rate=0.0,
+                downstream_calls=[DownstreamCall(target="db-service", latency_ms=db_lat, errors=0)]
+            )
+            db_snap = CanonicalMetricSnapshot(
+                service_id="db-service", timestamp=now, throughput_rps=240.0 if is_degraded else 120.0,
+                latency_p50_ms=650.0 if is_degraded else 10.0, latency_p99_ms=db_lat, error_rate=0.0,
+                pool_active=db_pool, pool_max=5
+            )
 
             return {
-                "api-gateway": CanonicalMetricSnapshot(
-                    service_id="api-gateway", timestamp=now, throughput_rps=150.0,
-                    latency_p50_ms=45.0, latency_p99_ms=gw_lat, error_rate=gw_errors,
-                    pool_active=12, pool_max=50,
-                    downstream_calls=[DownstreamCall(target="orders-service", latency_ms=orders_lat, errors=int(gw_errors * 10))]
-                ),
-                "orders-service": CanonicalMetricSnapshot(
-                    service_id="orders-service", timestamp=now, throughput_rps=150.0,
-                    latency_p50_ms=40.0, latency_p99_ms=orders_lat, error_rate=gw_errors * 0.7,
-                    pool_active=orders_pool, pool_max=20, retries_per_sec=35.0 if is_degraded else 0.0,
-                    downstream_calls=[DownstreamCall(target="inventory-service", latency_ms=inv_lat, errors=5 if is_degraded else 0)]
-                ),
-                "inventory-service": CanonicalMetricSnapshot(
-                    service_id="inventory-service", timestamp=now, throughput_rps=185.0 if is_degraded else 150.0,
-                    latency_p50_ms=800.0 if is_degraded else 12.0, latency_p99_ms=inv_lat, error_rate=0.0,
-                    pool_active=inv_pool, pool_max=20,
-                ),
-                "payment-service": CanonicalMetricSnapshot(
-                    service_id="payment-service", timestamp=now, throughput_rps=40.0,
-                    latency_p50_ms=18.0, latency_p99_ms=25.0, error_rate=0.0,
-                    pool_active=3, pool_max=20,
-                ),
+                "gateway": gw_snap, "api-gateway": gw_snap,
+                "orders": orders_snap, "orders-service": orders_snap,
+                "inventory": inv_snap, "inventory-service": inv_snap,
+                "payment": pay_snap, "payment-service": pay_snap,
+                "db-service": db_snap,
             }
 
         elif scenario_type.upper() == "RETRY_STORM":
-            # Inventory throws timeouts at second 3, causing retries to multiply traffic
             is_storm = second >= 3
             retries = 55.0 if is_storm else 0.0
             orders_rps = 350.0 if is_storm else 100.0
+            db_pool = 5 if is_storm else 2
+
+            gw_snap = CanonicalMetricSnapshot(
+                service_id="gateway", timestamp=now, throughput_rps=120.0,
+                latency_p50_ms=30.0, latency_p99_ms=950.0 if is_storm else 35.0, error_rate=0.18 if is_storm else 0.0,
+            )
+            orders_snap = CanonicalMetricSnapshot(
+                service_id="orders", timestamp=now, throughput_rps=orders_rps,
+                latency_p50_ms=80.0, latency_p99_ms=1100.0 if is_storm else 40.0, error_rate=0.15 if is_storm else 0.0,
+                retries_per_sec=retries,
+            )
+            inv_snap = CanonicalMetricSnapshot(
+                service_id="inventory", timestamp=now, throughput_rps=orders_rps * 1.2 if is_storm else 80.0,
+                latency_p50_ms=600.0 if is_storm else 15.0, latency_p99_ms=1200.0 if is_storm else 30.0, error_rate=0.25 if is_storm else 0.0,
+            )
+            pay_snap = CanonicalMetricSnapshot(
+                service_id="payment", timestamp=now, throughput_rps=40.0,
+                latency_p50_ms=18.0, latency_p99_ms=25.0, error_rate=0.0,
+            )
+            db_snap = CanonicalMetricSnapshot(
+                service_id="db-service", timestamp=now, throughput_rps=300.0 if is_storm else 80.0,
+                latency_p50_ms=450.0 if is_storm else 10.0, latency_p99_ms=980.0 if is_storm else 25.0, error_rate=0.0,
+                pool_active=db_pool, pool_max=5
+            )
 
             return {
-                "api-gateway": CanonicalMetricSnapshot(
-                    service_id="api-gateway", timestamp=now, throughput_rps=120.0,
-                    latency_p50_ms=30.0, latency_p99_ms=950.0 if is_storm else 35.0, error_rate=0.18 if is_storm else 0.0,
-                    pool_active=25, pool_max=50,
-                ),
-                "orders-service": CanonicalMetricSnapshot(
-                    service_id="orders-service", timestamp=now, throughput_rps=orders_rps,
-                    latency_p50_ms=80.0, latency_p99_ms=1100.0 if is_storm else 40.0, error_rate=0.15 if is_storm else 0.0,
-                    pool_active=18, pool_max=20, retries_per_sec=retries,
-                    downstream_calls=[DownstreamCall(target="inventory-service", latency_ms=900.0 if is_storm else 20.0, errors=20 if is_storm else 0)]
-                ),
-                "inventory-service": CanonicalMetricSnapshot(
-                    service_id="inventory-service", timestamp=now, throughput_rps=orders_rps * 1.5 if is_storm else 100.0,
-                    latency_p50_ms=600.0 if is_storm else 15.0, latency_p99_ms=1200.0 if is_storm else 30.0, error_rate=0.25 if is_storm else 0.0,
-                    pool_active=20, pool_max=20,
-                ),
+                "gateway": gw_snap, "api-gateway": gw_snap,
+                "orders": orders_snap, "orders-service": orders_snap,
+                "inventory": inv_snap, "inventory-service": inv_snap,
+                "payment": pay_snap, "payment-service": pay_snap,
+                "db-service": db_snap,
             }
 
         # Default Healthy Steady State
+        gw_snap = CanonicalMetricSnapshot(service_id="gateway", timestamp=now, throughput_rps=80.0, latency_p50_ms=15.0, latency_p99_ms=35.0, error_rate=0.0)
+        orders_snap = CanonicalMetricSnapshot(service_id="orders", timestamp=now, throughput_rps=80.0, latency_p50_ms=20.0, latency_p99_ms=45.0, error_rate=0.0)
+        inv_snap = CanonicalMetricSnapshot(service_id="inventory", timestamp=now, throughput_rps=80.0, latency_p50_ms=10.0, latency_p99_ms=25.0, error_rate=0.0)
+        pay_snap = CanonicalMetricSnapshot(service_id="payment", timestamp=now, throughput_rps=80.0, latency_p50_ms=12.0, latency_p99_ms=28.0, error_rate=0.0)
+        db_snap = CanonicalMetricSnapshot(service_id="db-service", timestamp=now, throughput_rps=160.0, latency_p50_ms=8.0, latency_p99_ms=20.0, error_rate=0.0, pool_active=1, pool_max=5)
+
         return {
-            "api-gateway": CanonicalMetricSnapshot(
-                service_id="api-gateway", timestamp=now, throughput_rps=80.0,
-                latency_p50_ms=15.0, latency_p99_ms=35.0, error_rate=0.0, pool_active=8, pool_max=50
-            ),
-            "orders-service": CanonicalMetricSnapshot(
-                service_id="orders-service", timestamp=now, throughput_rps=80.0,
-                latency_p50_ms=20.0, latency_p99_ms=45.0, error_rate=0.0, pool_active=6, pool_max=20
-            ),
-            "inventory-service": CanonicalMetricSnapshot(
-                service_id="inventory-service", timestamp=now, throughput_rps=80.0,
-                latency_p50_ms=10.0, latency_p99_ms=25.0, error_rate=0.0, pool_active=4, pool_max=20
-            ),
+            "gateway": gw_snap, "api-gateway": gw_snap,
+            "orders": orders_snap, "orders-service": orders_snap,
+            "inventory": inv_snap, "inventory-service": inv_snap,
+            "payment": pay_snap, "payment-service": pay_snap,
+            "db-service": db_snap,
         }

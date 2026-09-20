@@ -28,6 +28,7 @@ export default function CausalEdge({
   } else if (isStressed) {
     strokeColor = 'var(--health-warn)';
     strokeWidth = 1.8;
+    className = 'stressed-edge-path';
   }
 
   return (
