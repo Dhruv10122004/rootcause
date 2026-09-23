@@ -6,4 +6,3 @@ __pycache__/
 node_modules/
 dist/
 target-services/node_modules/
-resource/
