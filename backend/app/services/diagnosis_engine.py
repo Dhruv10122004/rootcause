@@ -125,18 +125,18 @@ class DiagnosisEngine:
 
     @staticmethod
     def _extract_diagnosis_json(full_text: str) -> Optional[DiagnosisReport]:
-        """Finds and parses the embedded ```json ... ``` block in the LLM response."""
-        pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
-        match = re.search(pattern, full_text, re.DOTALL)
-        if match:
-            raw_json = match.group(1)
+        """Finds and parses the embedded ```json ... ``` block or raw JSON in the LLM response."""
+        # Find json markdown block first
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", full_text)
+        candidate = match.group(1).strip() if match else full_text
+
+        # Find outermost { ... }
+        start_idx = candidate.find("{")
+        end_idx = candidate.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            raw_json = candidate[start_idx:end_idx + 1]
         else:
-            # Fallback: look for naked JSON braces
-            naked_match = re.search(r"(\{[\s\S]*\"failure_mode\"[\s\S]*\})", full_text)
-            if naked_match:
-                raw_json = naked_match.group(1)
-            else:
-                return None
+            return None
 
         try:
             data = json.loads(raw_json)

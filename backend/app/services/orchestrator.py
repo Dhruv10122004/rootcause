@@ -77,6 +77,7 @@ class ExperimentOrchestrator:
             stress_driver.start()
 
         latest_snapshots: Dict[str, CanonicalMetricSnapshot] = {}
+        peak_snapshots: Dict[str, CanonicalMetricSnapshot] = {}
         fault_applied = False
         fault_recovered = False
 
@@ -147,6 +148,21 @@ class ExperimentOrchestrator:
 
                     latest_snapshots = snapshots
 
+                # Track peak stress snapshot across the test run for accurate post-test diagnosis
+                for svc_id, snap in latest_snapshots.items():
+                    prev = peak_snapshots.get(svc_id)
+                    if not prev:
+                        peak_snapshots[svc_id] = snap
+                    else:
+                        is_worse = (
+                            snap.latency_p99_ms > prev.latency_p99_ms or
+                            snap.error_rate > prev.error_rate or
+                            (snap.pool_active or 0) > (prev.pool_active or 0) or
+                            snap.retries_per_sec > prev.retries_per_sec
+                        )
+                        if is_worse:
+                            peak_snapshots[svc_id] = snap
+
                 # Emit metrics tick for live dashboard
                 serialized_snapshots = {k: v.model_dump() for k, v in latest_snapshots.items()}
                 yield SessionEvent(
@@ -179,9 +195,12 @@ class ExperimentOrchestrator:
         elif simulation_scenario:
             chaos_ctx = {"simulation_scenario": simulation_scenario}
 
+        # Use peak degradation snapshots if observed, fallback to latest
+        diagnosis_snapshots = peak_snapshots if peak_snapshots else latest_snapshots
+
         # Stream reasoning tokens live to the UI
         full_thought_buffer = []
-        async for token in self.engine.stream_diagnosis(topology, latest_snapshots, chaos_context=chaos_ctx):
+        async for token in self.engine.stream_diagnosis(topology, diagnosis_snapshots, chaos_context=chaos_ctx):
             full_thought_buffer.append(token)
             yield SessionEvent(
                 event_type=SessionEventType.REASONING_CHUNK,

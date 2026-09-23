@@ -111,48 +111,75 @@ class MockLLMProvider(BaseLLMProvider):
     """
 
     async def stream_reasoning(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
-        # Determine scenario from diagnostic alerts in prompt
+        # Determine scenario from diagnostic alerts and context in prompt
         is_pool = "POOL_SATURATION" in user_prompt or "100%" in user_prompt
-        is_retry = "RETRY_SPIKE" in user_prompt and not is_pool
+        is_retry = ("RETRY_SPIKE" in user_prompt or "RETRY_STORM" in user_prompt) and not is_pool
+        is_cascade = (
+            is_pool or
+            "CASCADING_FAILURE" in user_prompt or
+            "HIGH_LATENCY" in user_prompt or
+            "ELEVATED_ERRORS" in user_prompt or
+            ("- db-service" in user_prompt) or
+            ("- db " in user_prompt)
+        ) and not is_retry
 
-        if is_pool:
+        if is_cascade:
+            # Check for db-service in topology section
+            if "- db-service" in user_prompt or "- db " in user_prompt:
+                rc_svc = "db-service"
+                rc_fix_svc = "db-service"
+                blast = ["inventory", "payment", "orders", "gateway"]
+                summary_text = "The database service experienced severe latency under concurrency load, exhausting caller connection pools and triggering cascading timeouts up to the ingress gateway."
+                evidence_items = ['"db-service p99 latency exceeded SLA thresholds"', '"Connection pool saturation and upstream wait queues"']
+            else:
+                rc_svc = "inventory-service" if "inventory-service" in user_prompt else "inventory"
+                rc_fix_svc = "orders-service" if "orders-service" in user_prompt else "orders"
+                blast = ["orders-service", "api-gateway"] if "orders-service" in user_prompt else ["orders", "gateway"]
+                summary_text = "Degraded latency in inventory-service filled caller connection pools, triggering cascading timeouts at the gateway."
+                evidence_items = ['"orders-service connection pool at 100%"', '"api-gateway p99 jumped to 1450ms"']
+
+            evidence_json = ", ".join(evidence_items)
+            blast_json = json.dumps(blast)
+
             chunks = [
                 "Scanning service vitals across the dependency tree...\n",
-                "Detected connection pool saturation on orders-service at 100% (20/20).\n",
-                "Trace analysis reveals orders-service is waiting 1100ms on inventory-service.\n",
-                "Conclusion: Latency propagation exhausted connection pool, blocking upstream gateway requests.\n\n",
+                f"Detected critical latency spike and connection pressure on {rc_svc}.\n",
+                f"Trace analysis reveals upstream callers queued while waiting for {rc_svc} responses.\n",
+                "Conclusion: Latency propagation exhausted caller connection pools, blocking ingress requests.\n\n",
                 '```json\n{\n'
                 '  "failure_mode": "CASCADING_FAILURE",\n'
-                '  "root_cause_service": "inventory-service",\n'
-                '  "blast_radius": ["orders-service", "api-gateway"],\n'
+                f'  "root_cause_service": "{rc_svc}",\n'
+                f'  "blast_radius": {blast_json},\n'
                 '  "confidence_score": 0.96,\n'
-                '  "summary": "Degraded latency in inventory-service filled caller connection pools, triggering cascading timeouts at the gateway.",\n'
-                '  "evidence": ["orders-service connection pool at 100%", "api-gateway p99 jumped to 1450ms"],\n'
+                f'  "summary": "{summary_text}",\n'
+                f'  "evidence": [{evidence_json}],\n'
                 '  "suggested_fix": {\n'
-                '    "action": "Add Circuit Breaker & Bulkhead",\n'
-                '    "target_service": "orders-service",\n'
-                '    "recommendation": "Enforce a 400ms timeout on downstream calls to inventory-service and isolate connection pool capacity."\n'
+                '    "action": "Add Circuit Breaker & Connection Pool Expansion",\n'
+                f'    "target_service": "{rc_fix_svc}",\n'
+                '    "recommendation": "Configure circuit breaker thresholds with fast-fail fallback and expand connection pool capacity."\n'
                 '  }\n'
                 '}\n```'
             ]
         elif is_retry:
+            target_svc = "orders-service" if "orders-service" in user_prompt else "orders"
+            inv_svc = "inventory-service" if "inventory-service" in user_prompt else "inventory"
             chunks = [
                 "Analyzing distributed call graph...\n",
-                "Observed critical retry inflation: orders-service retrying inventory-service.\n",
+                f"Observed critical retry inflation: {target_svc} retrying {inv_svc}.\n",
                 "Because downstream returned timeout, caller retried without backoff.\n",
-                "Diagnosing: RETRY_STORM amplified load 3x on inventory-service.\n",
+                f"Diagnosing: RETRY_STORM amplified load 3x on {inv_svc}.\n",
                 "Generating root cause report...\n\n",
                 '```json\n{\n'
                 '  "failure_mode": "RETRY_STORM",\n'
-                '  "root_cause_service": "inventory-service",\n'
-                '  "blast_radius": ["orders-service", "api-gateway"],\n'
+                f'  "root_cause_service": "{inv_svc}",\n'
+                f'  "blast_radius": ["{target_svc}", "gateway"],\n'
                 '  "confidence_score": 0.94,\n'
                 '  "summary": "Downstream timeouts induced un-throttled retry loops, creating a self-reinforcing retry storm.",\n'
-                '  "evidence": ["Retries spiked from 0 to 45/sec", "orders-service RPS multiplied under failure"],\n'
+                '  "evidence": ["Retries spiked under failure", "Downstream latency escalated exponentially"],\n'
                 '  "suggested_fix": {\n'
                 '    "action": "Implement Exponential Backoff with Jitter",\n'
-                '    "target_service": "orders-service",\n'
-                '    "recommendation": "Configure circuit breaker with exponential backoff and decorrelated jitter on orders-service -> inventory-service calls."\n'
+                f'    "target_service": "{target_svc}",\n'
+                f'    "recommendation": "Configure circuit breaker with exponential backoff and decorrelated jitter on calls from {target_svc} to {inv_svc}."\n'
                 '  }\n'
                 '}\n```'
             ]

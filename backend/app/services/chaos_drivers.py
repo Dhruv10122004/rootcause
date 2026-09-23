@@ -206,44 +206,96 @@ class SimulationScenarioGenerator:
     def get_tick_snapshots(scenario_type: str, second: int) -> Dict[str, CanonicalMetricSnapshot]:
         now = time.time()
         
+        import random
+
         if scenario_type.upper() == "CASCADING_FAILURE":
-            # Degradation kicks in at second 2
-            is_degraded = second >= 2
-            db_pool = 5 if is_degraded else 1
-            db_lat = 1250.0 if is_degraded else 15.0
-            inv_lat = 1150.0 if is_degraded else 18.0
-            pay_lat = 1100.0 if is_degraded else 20.0
-            orders_lat = 1380.0 if is_degraded else 25.0
-            gw_lat = 1450.0 if is_degraded else 35.0
-            gw_errors = 0.14 if is_degraded else 0.0
+            # Realistic progressive failure cascade:
+            # Second 1: Baseline healthy
+            # Second 2: Traffic ramps up, DB pool starts filling (3/5)
+            # Second 3: ROOT CAUSE: DB connection pool saturates 5/5, DB latency jumps to 620ms (RED)
+            # Second 4: Inventory & Payment wait on DB query locks, latencies spike to 850ms (AMBER/RED)
+            # Second 5: Orders pool saturates 20/20 waiting on downstreams, latency hits 1250ms (RED)
+            # Second 6: Gateway timeouts begin, latency hits 1450ms, 12% errors (RED)
+            # Second 7-8: Sustained cascade with live jitter so numbers visibly stream dynamically
+
+            jitter = (second * 7) % 23 - 10  # Deterministic organic jitter
+
+            if second <= 1:
+                gw_rps, gw_lat, gw_err = 60.0, 25.0, 0.0
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 60.0, 22.0, 0.0, 4, 0.0
+                inv_rps, inv_lat = 50.0, 15.0
+                pay_rps, pay_lat = 50.0, 16.0
+                db_rps, db_lat, db_pool = 100.0, 12.0, 1
+            elif second == 2:
+                # ROOT CAUSE: DB pool hits 5/5 max (100% saturation)!
+                gw_rps, gw_lat, gw_err = 135.0, 65.0, 0.0
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 135.0, 85.0, 0.0, 20, 0.0
+                inv_rps, inv_lat = 110.0, 320.0
+                pay_rps, pay_lat = 110.0, 340.0
+                db_rps, db_lat, db_pool = 220.0, 620.0, 5
+            elif second == 3:
+                # Inventory & Payment queueing on DB locks
+                gw_rps, gw_lat, gw_err = 145.0, 180.0, 0.01
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 145.0, 380.0, 0.0, 20, 8.0
+                inv_rps, inv_lat = 115.0, 680.0
+                pay_rps, pay_lat = 115.0, 710.0
+                db_rps, db_lat, db_pool = 235.0, 850.0 + jitter, 5
+            elif second == 4:
+                # Upstream workers block on DB
+                gw_rps, gw_lat, gw_err = 148.0, 420.0, 0.03
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 148.0, 780.0 + jitter, 0.02, 20, 16.0
+                inv_rps, inv_lat = 118.0, 920.0 + jitter
+                pay_rps, pay_lat = 118.0, 950.0 + jitter
+                db_rps, db_lat, db_pool = 240.0, 1100.0 + jitter, 5
+            elif second == 5:
+                # Orders latency spikes to critical red
+                gw_rps, gw_lat, gw_err = 150.0, 890.0 + jitter, 0.06
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 150.0, 1260.0 + jitter, 0.04, 20, 28.0
+                inv_rps, inv_lat = 120.0, 1140.0 + jitter
+                pay_rps, pay_lat = 120.0, 1080.0 + jitter
+                db_rps, db_lat, db_pool = 240.0, 1220.0 + jitter, 5
+            elif second == 6:
+                # Ingress degradation
+                gw_rps, gw_lat, gw_err = 152.0, 1420.0 + jitter, 0.12
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 150.0, 1340.0 + jitter, 0.08, 20, 34.0
+                inv_rps, inv_lat = 120.0, 1160.0 + jitter
+                pay_rps, pay_lat = 120.0, 1110.0 + jitter
+                db_rps, db_lat, db_pool = 240.0, 1250.0 + jitter, 5
+            else:
+                # Sustained cascading peak with live fluctuating values
+                gw_rps, gw_lat, gw_err = 150.0 + jitter, 1450.0 + jitter * 2, 0.15
+                ord_rps, ord_lat, ord_err, ord_pool, ord_retries = 150.0 + jitter, 1380.0 + jitter * 2, 0.10, 20, 35.0
+                inv_rps, inv_lat = 120.0 + jitter, 1150.0 + jitter * 1.5
+                pay_rps, pay_lat = 120.0 + jitter, 1100.0 + jitter * 1.5
+                db_rps, db_lat, db_pool = 240.0 + jitter * 2, 1260.0 + jitter, 5
 
             gw_snap = CanonicalMetricSnapshot(
-                service_id="gateway", timestamp=now, throughput_rps=150.0 if is_degraded else 80.0,
-                latency_p50_ms=45.0, latency_p99_ms=gw_lat, error_rate=gw_errors,
-                downstream_calls=[DownstreamCall(target="orders", latency_ms=orders_lat, errors=int(gw_errors * 10))]
+                service_id="gateway", timestamp=now, throughput_rps=gw_rps,
+                latency_p50_ms=45.0, latency_p99_ms=gw_lat, error_rate=gw_err,
+                downstream_calls=[DownstreamCall(target="orders", latency_ms=ord_lat, errors=int(gw_err * 10))]
             )
             orders_snap = CanonicalMetricSnapshot(
-                service_id="orders", timestamp=now, throughput_rps=150.0 if is_degraded else 80.0,
-                latency_p50_ms=40.0, latency_p99_ms=orders_lat, error_rate=gw_errors * 0.7,
-                pool_active=20 if is_degraded else 5, pool_max=20, retries_per_sec=35.0 if is_degraded else 0.0,
+                service_id="orders", timestamp=now, throughput_rps=ord_rps,
+                latency_p50_ms=40.0, latency_p99_ms=ord_lat, error_rate=ord_err,
+                pool_active=ord_pool, pool_max=20, retries_per_sec=ord_retries,
                 downstream_calls=[
-                    DownstreamCall(target="inventory", latency_ms=inv_lat, errors=5 if is_degraded else 0),
-                    DownstreamCall(target="payment", latency_ms=pay_lat, errors=4 if is_degraded else 0),
+                    DownstreamCall(target="inventory", latency_ms=inv_lat, errors=5 if second >= 4 else 0),
+                    DownstreamCall(target="payment", latency_ms=pay_lat, errors=4 if second >= 4 else 0),
                 ]
             )
             inv_snap = CanonicalMetricSnapshot(
-                service_id="inventory", timestamp=now, throughput_rps=120.0 if is_degraded else 60.0,
-                latency_p50_ms=800.0 if is_degraded else 12.0, latency_p99_ms=inv_lat, error_rate=0.0,
+                service_id="inventory", timestamp=now, throughput_rps=inv_rps,
+                latency_p50_ms=800.0 if second >= 4 else 12.0, latency_p99_ms=inv_lat, error_rate=0.0,
                 downstream_calls=[DownstreamCall(target="db-service", latency_ms=db_lat, errors=0)]
             )
             pay_snap = CanonicalMetricSnapshot(
-                service_id="payment", timestamp=now, throughput_rps=120.0 if is_degraded else 60.0,
-                latency_p50_ms=750.0 if is_degraded else 14.0, latency_p99_ms=pay_lat, error_rate=0.0,
+                service_id="payment", timestamp=now, throughput_rps=pay_rps,
+                latency_p50_ms=750.0 if second >= 4 else 14.0, latency_p99_ms=pay_lat, error_rate=0.0,
                 downstream_calls=[DownstreamCall(target="db-service", latency_ms=db_lat, errors=0)]
             )
             db_snap = CanonicalMetricSnapshot(
-                service_id="db-service", timestamp=now, throughput_rps=240.0 if is_degraded else 120.0,
-                latency_p50_ms=650.0 if is_degraded else 10.0, latency_p99_ms=db_lat, error_rate=0.0,
+                service_id="db-service", timestamp=now, throughput_rps=db_rps,
+                latency_p50_ms=650.0 if second >= 3 else 10.0, latency_p99_ms=db_lat, error_rate=0.0,
                 pool_active=db_pool, pool_max=5
             )
 
@@ -252,35 +304,36 @@ class SimulationScenarioGenerator:
                 "orders": orders_snap, "orders-service": orders_snap,
                 "inventory": inv_snap, "inventory-service": inv_snap,
                 "payment": pay_snap, "payment-service": pay_snap,
-                "db-service": db_snap,
+                "db-service": db_snap, "db": db_snap,
             }
 
         elif scenario_type.upper() == "RETRY_STORM":
+            jitter = (second * 5) % 19 - 8
             is_storm = second >= 3
-            retries = 55.0 if is_storm else 0.0
-            orders_rps = 350.0 if is_storm else 100.0
-            db_pool = 5 if is_storm else 2
+            retries = min(60.0, second * 12.0) if is_storm else 0.0
+            orders_rps = 100.0 + second * 35.0 if is_storm else 100.0
+            db_pool = 5 if second >= 4 else (3 if second >= 2 else 1)
 
             gw_snap = CanonicalMetricSnapshot(
-                service_id="gateway", timestamp=now, throughput_rps=120.0,
-                latency_p50_ms=30.0, latency_p99_ms=950.0 if is_storm else 35.0, error_rate=0.18 if is_storm else 0.0,
+                service_id="gateway", timestamp=now, throughput_rps=120.0 + jitter,
+                latency_p50_ms=30.0, latency_p99_ms=950.0 + jitter if is_storm else 35.0, error_rate=0.18 if is_storm else 0.0,
             )
             orders_snap = CanonicalMetricSnapshot(
-                service_id="orders", timestamp=now, throughput_rps=orders_rps,
-                latency_p50_ms=80.0, latency_p99_ms=1100.0 if is_storm else 40.0, error_rate=0.15 if is_storm else 0.0,
+                service_id="orders", timestamp=now, throughput_rps=orders_rps + jitter,
+                latency_p50_ms=80.0, latency_p99_ms=1100.0 + jitter if is_storm else 40.0, error_rate=0.15 if is_storm else 0.0,
                 retries_per_sec=retries,
             )
             inv_snap = CanonicalMetricSnapshot(
                 service_id="inventory", timestamp=now, throughput_rps=orders_rps * 1.2 if is_storm else 80.0,
-                latency_p50_ms=600.0 if is_storm else 15.0, latency_p99_ms=1200.0 if is_storm else 30.0, error_rate=0.25 if is_storm else 0.0,
+                latency_p50_ms=600.0 if is_storm else 15.0, latency_p99_ms=1200.0 + jitter if is_storm else 30.0, error_rate=0.25 if is_storm else 0.0,
             )
             pay_snap = CanonicalMetricSnapshot(
-                service_id="payment", timestamp=now, throughput_rps=40.0,
+                service_id="payment", timestamp=now, throughput_rps=40.0 + jitter,
                 latency_p50_ms=18.0, latency_p99_ms=25.0, error_rate=0.0,
             )
             db_snap = CanonicalMetricSnapshot(
-                service_id="db-service", timestamp=now, throughput_rps=300.0 if is_storm else 80.0,
-                latency_p50_ms=450.0 if is_storm else 10.0, latency_p99_ms=980.0 if is_storm else 25.0, error_rate=0.0,
+                service_id="db-service", timestamp=now, throughput_rps=300.0 + jitter,
+                latency_p50_ms=450.0 if is_storm else 10.0, latency_p99_ms=980.0 + jitter if is_storm else 25.0, error_rate=0.0,
                 pool_active=db_pool, pool_max=5
             )
 
@@ -289,7 +342,7 @@ class SimulationScenarioGenerator:
                 "orders": orders_snap, "orders-service": orders_snap,
                 "inventory": inv_snap, "inventory-service": inv_snap,
                 "payment": pay_snap, "payment-service": pay_snap,
-                "db-service": db_snap,
+                "db-service": db_snap, "db": db_snap,
             }
 
         # Default Healthy Steady State
@@ -304,5 +357,5 @@ class SimulationScenarioGenerator:
             "orders": orders_snap, "orders-service": orders_snap,
             "inventory": inv_snap, "inventory-service": inv_snap,
             "payment": pay_snap, "payment-service": pay_snap,
-            "db-service": db_snap,
+            "db-service": db_snap, "db": db_snap,
         }
